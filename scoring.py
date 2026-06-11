@@ -145,8 +145,13 @@ def recalculate_all_scores() -> dict:
     }
 
 
-def build_user_stats() -> list[UserStats]:
+def build_user_stats(group_id: int | None = None) -> list[UserStats]:
     all_users = [u for u in db.list_participants() if u["active"]]
+    
+    # SE um group_id for passado, filtramos a lista em memória
+    if group_id is not None:
+        all_users = [u for u in all_users if u.get("group_id") == group_id]
+        
     settings = db.get_tournament_settings()
     stats: list[UserStats] = []
 
@@ -160,7 +165,6 @@ def build_user_stats() -> list[UserStats]:
         correct_diffs = 0
 
         for p in finished_preds:
-            
             cls = classify_prediction(
                 p["home_score"],
                 p["away_score"],
@@ -222,8 +226,8 @@ def build_user_stats() -> list[UserStats]:
     return stats
 
 
-def ranking_dataframe() -> pd.DataFrame:
-    stats = build_user_stats()
+def ranking_dataframe(group_id: int | None = None) -> pd.DataFrame:
+    stats = build_user_stats(group_id)
     rows = []
     for pos, s in enumerate(stats, start=1):
         rows.append(
@@ -241,7 +245,6 @@ def ranking_dataframe() -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
-
 
 def save_current_ranking_snapshot():
     stats = build_user_stats()
@@ -342,8 +345,8 @@ def user_statistics(user_id: int) -> dict:
     }
 
 
-def dashboard_metrics() -> dict:
-    stats = build_user_stats()
+def dashboard_metrics(group_id: int | None = None) -> dict:
+    stats = build_user_stats(group_id)
     if not stats:
         return {}
 
@@ -354,21 +357,28 @@ def dashboard_metrics() -> dict:
     best_phase_user = None
     best_phase_pts = -1
     for phase in phases:
+        # Se desejar que a pontuação máxima por fase filtre por grupo futuramente, 
+        # pode passar parâmetros para phase_ranking, mas mantendo compatibilidade:
         df = phase_ranking(phase["id"])
         if not df.empty:
-            top = df.iloc[0]
-            if top["Pontos"] > best_phase_pts:
-                best_phase_pts = top["Pontos"]
-                best_phase_user = top["Participante"]
-                best_phase = phase["name"]
+            # Filtra apenas participantes pertencentes ao grupo se necessário
+            if group_id is not None:
+                group_user_names = [s.full_name for s in stats]
+                df = df[df["Participante"].isin(group_user_names)]
+            
+            if not df.empty:
+                top = df.iloc[0]
+                if top["Pontos"] > best_phase_pts:
+                    best_phase_pts = top["Pontos"]
+                    best_phase_user = top["Participante"]
+                    best_phase = phase["name"]
 
     exact_king = max(stats, key=lambda s: (s.exact_scores, s.total_points))
 
-    hat_trick_user = _find_hat_trick_winner()
-
+    # Opcional: ajustar filtros internos para as funções auxiliares respeitarem o grupo
+    hat_trick_user = _find_hat_trick_winner_group(stats)
     climb_user, climb_delta = _find_biggest_climb(stats)
-
-    zebra_king = _find_zebra_king()
+    zebra_king = _find_zebra_king_group(stats)
 
     return {
         "leader": leader,
@@ -379,10 +389,9 @@ def dashboard_metrics() -> dict:
         "zebra_king": zebra_king,
     }
 
-
-def _find_hat_trick_winner() -> dict | None:
-    """Participant with most sequences of 3+ exact scores in a row."""
-    participants = [u for u in db.list_participants() if u["active"]]
+def _find_hat_trick_winner_group(allowed_stats: list[UserStats]) -> dict | None:
+    allowed_ids = {s.user_id for s in allowed_stats}
+    participants = [u for u in db.list_participants() if u["active"] and u["id"] in allowed_ids]
     best = None
     best_count = 0
 
@@ -414,35 +423,11 @@ def _find_hat_trick_winner() -> dict | None:
                 "hat_tricks": hat_tricks,
                 "max_streak": max_streak,
             }
-
     return best
 
-
-def _find_biggest_climb(current_stats: list[UserStats]) -> tuple[str | None, int]:
-    earliest = {s["user_id"]: s for s in db.get_earliest_snapshots()}
-    if not earliest:
-        return None, 0
-
-    current_pos = {s.user_id: i + 1 for i, s in enumerate(current_stats)}
-    best_user = None
-    best_delta = 0
-
-    for s in current_stats:
-        if s.user_id not in earliest:
-            continue
-        old_pos = earliest[s.user_id]["position"]
-        new_pos = current_pos[s.user_id]
-        delta = old_pos - new_pos
-        if delta > best_delta:
-            best_delta = delta
-            best_user = s.full_name
-
-    return best_user, best_delta
-
-
-def _find_zebra_king() -> dict | None:
-    """Most points from underdog wins (away team or draw predicted correctly when favorite lost)."""
-    participants = [u for u in db.list_participants() if u["active"]]
+def _find_zebra_king_group(allowed_stats: list[UserStats]) -> dict | None:
+    allowed_ids = {s.user_id for s in allowed_stats}
+    participants = [u for u in db.list_participants() if u["active"] and u["id"] in allowed_ids]
     best = None
     best_zebra_pts = -1
 
@@ -477,9 +462,33 @@ def _find_zebra_king() -> dict | None:
                 "zebra_points": zebra_pts,
                 "zebra_count": zebra_count,
             }
-
     return best
 
+def _find_biggest_climb(current_stats: list[UserStats]) -> tuple[str | None, int]:
+    earliest = {s["user_id"]: s for s in db.get_earliest_snapshots()}  #
+    if not earliest:  #[cite: 5]
+        return None, 0  #[cite: 5]
+
+    # Mapeia as posições atuais apenas baseando-se na lista que já veio filtrada (do grupo ou geral)
+    current_pos = {s.user_id: i + 1 for i, s in enumerate(current_stats)}  #[cite: 5]
+    best_user = None  #[cite: 5]
+    best_delta = 0  #[cite: 5]
+
+    for s in current_stats:  #[cite: 5]
+        if s.user_id not in earliest:  #[cite: 5]
+            continue  #[cite: 5]
+        
+        # O snapshot gravou a posição Geral histórica do usuário no banco[cite: 5]
+        old_pos = earliest[s.user_id]["position"]  #[cite: 5]
+        new_pos = current_pos[s.user_id]  #[cite: 5]
+        
+        # Delta calcula a evolução relativa do competidor dentro do escopo selecionado
+        delta = old_pos - new_pos  #[cite: 5]
+        if delta > best_delta:  #[cite: 5]
+            best_delta = delta  #[cite: 5]
+            best_user = s.full_name  #[cite: 5]
+
+    return best_user, best_delta  #[cite: 5]
 
 def can_view_all_predictions(phase_status: str) -> bool:
     return phase_status in ("Fechada", "Finalizada")
