@@ -1,7 +1,6 @@
 """Dashboard page — Bolão Copa FIFA 2k26."""
 
 import streamlit as st
-
 import database as db
 import scoring
 
@@ -13,10 +12,24 @@ if "user" not in st.session_state or st.session_state.user is None:
     st.warning("Faça login na página principal.")
     st.stop()
 
-st.title("📊 Dashboard")
-st.markdown("Destaques e estatísticas do bolão.")
+user = st.session_state.user
 
-metrics = scoring.dashboard_metrics()
+# --- LÓGICA DE FILTRO POR GRUPO ---
+user_profile = db.get_user_by_id(user["id"])
+user_group_id = user_profile.get("group_id") if user_profile else None
+
+dashboard_options = ["🌍 Visão Geral do Bolão"]
+if user_group_id:
+    group_name = db.get_group_name(user_group_id)
+    dashboard_options.append(f"👥 Meu Grupo: {group_name}")
+
+st.title("📊 Dashboard")
+selected_dash = st.selectbox("Visualizar métricas de:", dashboard_options)
+selected_group_id = user_group_id if "👥" in selected_dash else None
+
+st.write("---")
+
+metrics = scoring.dashboard_metrics(group_id=selected_group_id)
 
 if not metrics:
     st.info("Dashboard disponível após cadastro de participantes e palpites.")
@@ -33,7 +46,7 @@ zebra = metrics["zebra_king"]
 c1, c2, c3 = st.columns(3)
 
 with c1:
-    st.markdown("### 👑 Líder Geral")
+    st.markdown("### 👑 Líder")
     st.metric(
         label=leader.full_name,
         value=f"{leader.total_points} pts",
@@ -74,7 +87,7 @@ with c4:
             delta=f"Maior sequência: {hat_trick['max_streak']}",
         )
     else:
-        st.info("Nenhum hat-trick registrado ainda.")
+        st.info("Nenhum hat-trick registrado para o escopo selecionado.")
 
 with c5:
     st.markdown("### 📈 Maior Escalada")
@@ -85,10 +98,7 @@ with c5:
             value=f"+{climb['delta']} posições",
         )
     else:
-        st.info(
-            "Registre snapshots via **Admin → Recalcular classificação** "
-            "em momentos diferentes para acompanhar escaladas."
-        )
+        st.info("Sem snapshots suficientes registrados para este escopo.")
 
 with c6:
     st.markdown("### 🦓 Rei das Zebras")
@@ -100,12 +110,12 @@ with c6:
             delta=f"{zebra['zebra_count']} zebras",
         )
     else:
-        st.info("Nenhuma zebra registrada ainda.")
+        st.info("Nenhuma zebra registrada neste escopo ainda.")
 
 st.divider()
 
 st.subheader("Visão geral do ranking")
-df = scoring.ranking_dataframe()
+df = scoring.ranking_dataframe(group_id=selected_group_id)
 if not df.empty:
     top5 = df.head(5)
     st.dataframe(top5, use_container_width=True, hide_index=True)
