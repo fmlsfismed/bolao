@@ -1,7 +1,6 @@
 """Ranking page — Bolão Copa FIFA 2k26."""
 
 import streamlit as st
-
 import database as db
 import scoring
 
@@ -13,7 +12,25 @@ if "user" not in st.session_state or st.session_state.user is None:
     st.warning("Faça login na página principal.")
     st.stop()
 
-st.title("🏆 Ranking Geral")
+user = st.session_state.user
+
+# --- LOGICA DE FILTRO POR GRUPO ---
+# Recupera o perfil completo atualizado do usuário para verificar o group_id
+user_profile = db.get_user_by_id(user["id"])
+user_group_id = user_profile.get("group_id") if user_profile else None
+
+ranking_options = ["🌍 Ranking Geral"]
+group_name = "Meu Grupo"
+
+if user_group_id:
+    group_name = db.get_group_name(user_group_id)
+    ranking_options.append(f"👥 Grupo: {group_name}")
+
+st.title("🏆 Classificação e Rankings")
+
+selected_rank = st.selectbox("Selecione o escopo da classificação:", ranking_options)
+selected_group_id = user_group_id if "👥" in selected_rank else None
+
 st.markdown(
     """
     **Critérios de desempate:**
@@ -24,19 +41,19 @@ st.markdown(
     """
 )
 
-df = scoring.ranking_dataframe()
+# Passa o ID do grupo selecionado (ou None se for o Geral)
+df = scoring.ranking_dataframe(group_id=selected_group_id)
 
 if df.empty:
     st.info("Ranking ainda não disponível. Cadastre participantes e palpites.")
 else:
-    user = st.session_state.user
     my_row = df[df["Usuário"] == user["username"]]
 
     if not my_row.empty:
         pos = int(my_row.iloc[0]["Posição"])
         pts = int(my_row.iloc[0]["Pontos Totais"])
         c1, c2, c3 = st.columns(3)
-        c1.metric("Sua posição", f"{pos}º")
+        c1.metric("Sua posição no escopo atual", f"{pos}º")
         c2.metric("Seus pontos", pts)
         c3.metric("Placares exatos", int(my_row.iloc[0]["Placares Exatos"]))
 
@@ -44,7 +61,7 @@ else:
 
     highlight = df.copy()
     if not my_row.empty:
-        st.markdown(f"Destaque: **{user['full_name']}** está em **{pos}º** lugar.")
+        st.markdown(f"Destaque: **{user['full_name']}** está em **{pos}º** lugar no filtro selecionado.")
 
     st.dataframe(
         highlight,
@@ -61,8 +78,14 @@ else:
     phase_names = [p["name"] for p in phases]
     sel = st.selectbox("Selecionar fase", phase_names)
     phase_id = next(p["id"] for p in phases if p["name"] == sel)
+    
     df_phase = scoring.phase_ranking(phase_id)
     if not df_phase.empty:
+        # Se estiver filtrando por grupo, ajusta a tabela de fases também
+        if selected_group_id is not None:
+            allowed_names = set(df["Participante"])
+            df_phase = df_phase[df_phase["Participante"].isin(allowed_names)].reset_index(drop=True)
+        
         df_phase.index = df_phase.index + 1
         df_phase.index.name = "Posição"
         st.dataframe(df_phase, use_container_width=True)
