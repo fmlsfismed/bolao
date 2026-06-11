@@ -11,6 +11,25 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
+def get_ranking_by_group(group_id):
+    """Busca o ranking de pontos apenas dos usuários de um grupo específico"""
+    # Substitua 'profiles' pelo nome da sua tabela de usuários se for diferente
+    response = (
+        supabase.table("profiles")
+        .select("username, total_points")
+        .eq("group_id", group_id)
+        .order("total_points", descending=True)
+        .execute()
+    )
+    return response.data
+
+def get_group_name(group_id):
+    """Busca o nome do grupo para exibir bonitinho na tela"""
+    response = supabase.table("groups").select("name").eq("id", group_id).execute()
+    if response.data:
+        return response.data[0]["name"]
+    return "Sem Grupo"
+
 def gerar_pdf_palpites(my_preds: list, full_name: str) -> bytes:
     """Gera um PDF em memória com os palpites do usuário."""
     buffer = io.BytesIO()
