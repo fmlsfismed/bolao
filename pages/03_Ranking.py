@@ -1,10 +1,11 @@
-"""Ranking page — Bolão Copa FIFA 2k26."""
+"""Dashboard & Ranking page — Bolão Copa FIFA 2k26 (Grupos + Empates + Ranking)."""
 
+import pandas as pd
 import streamlit as st
 import database as db
 import scoring
 
-st.set_page_config(page_title="Ranking — Bolão 2k26", layout="wide")
+st.set_page_config(page_title="Dashboard & Ranking — Bolão 2k26", layout="wide")
 
 db.init_db()
 
@@ -14,86 +15,183 @@ if "user" not in st.session_state or st.session_state.user is None:
 
 user = st.session_state.user
 
-# --- LOGICA DE FILTRO POR GRUPO ---
-# Recupera o perfil completo atualizado do usuário para verificar o group_id
+# --- LÓGICA DE FILTRO POR GRUPO DE USUÁRIOS (ESCOPO MESTRE) ---
 user_profile = db.get_user_by_id(user["id"])
 user_group_id = user_profile.get("group_id") if user_profile else None
 
-ranking_options = ["🌍 Ranking Geral"]
-group_name = "Meu Grupo"
-
+escopo_options = ["🌍 Visão Geral do Bolão"]
 if user_group_id:
     group_name = db.get_group_name(user_group_id)
-    ranking_options.append(f"👥 Grupo: {group_name}")
+    escopo_options.append(f"👥 Meu Grupo: {group_name}")
 
-st.title("🏆 Classificação e Rankings")
+st.title("📊 Dashboard e Classificação")
+selected_escopo = st.selectbox("Visualizar dados e rankings de:", escopo_options)
+selected_group_id = user_group_id if "👥" in selected_escopo else None
 
-selected_rank = st.selectbox("Selecione o escopo da classificação:", ranking_options)
-selected_group_id = user_group_id if "👥" in selected_rank else None
+st.write("---")
 
-st.markdown(
-    """
-    **Critérios de desempate:**
-    1. Mais placares exatos
-    2. Mais resultados corretos
-    3. Acerto do campeão
-    4. Sorteio determinístico
-    """
-)
+# Criamos duas abas principais para organizar o layout de forma limpa e profissional
+tab_dash, tab_rank = st.tabs(["⭐ Destaques e Métricas", "🏆 Tabelas de Classificação"])
 
-# Passa o ID do grupo selecionado (ou None se for o Geral)
-df = scoring.ranking_dataframe(group_id=selected_group_id)
+# ==============================================================================
+# --- ABA 1: DASHBOARD (MÉTRICAS + EMPATES) ---
+# ==============================================================================
+with tab_dash:
+    metrics = scoring.dashboard_metrics(group_id=selected_group_id)
 
-if df.empty:
-    st.info("Ranking ainda não disponível. Cadastre participantes e palpites.")
-else:
-    my_row = df[df["Usuário"] == user["username"]]
-
-    if not my_row.empty:
-        pos = int(my_row.iloc[0]["Posição"])
-        pts = int(my_row.iloc[0]["Pontos Totais"])
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Sua posição no escopo atual", f"{pos}º")
-        c2.metric("Seus pontos", pts)
-        c3.metric("Placares exatos", int(my_row.iloc[0]["Placares Exatos"]))
-
-    st.divider()
-
-    highlight = df.copy()
-    if not my_row.empty:
-        st.markdown(f"Destaque: **{user['full_name']}** está em **{pos}º** lugar no filtro selecionado.")
-
-    st.dataframe(
-        highlight,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Posição": st.column_config.NumberColumn(format="%dº"),
-        },
-    )
-
-    st.divider()
-    st.subheader("Ranking por fase")
-    phases = db.list_phases()
-    phase_names = [p["name"] for p in phases]
-    sel = st.selectbox("Selecionar fase", phase_names)
-    phase_id = next(p["id"] for p in phases if p["name"] == sel)
-    
-    df_phase = scoring.phase_ranking(phase_id)
-    if not df_phase.empty:
-        # Se estiver filtrando por grupo, ajusta a tabela de fases também
-        if selected_group_id is not None:
-            allowed_names = set(df["Participante"])
-            df_phase = df_phase[df_phase["Participante"].isin(allowed_names)].reset_index(drop=True)
-        
-        df_phase.index = df_phase.index + 1
-        df_phase.index.name = "Posição"
-        st.dataframe(df_phase, use_container_width=True)
+    if not metrics:
+        st.info("Estatísticas e destaques indisponíveis para o escopo selecionado.")
     else:
-        st.info("Sem dados para esta fase.")
+        # FUNÇÃO FORMATADORA DE EMPATES
+        def formatar_nomes(lista_nomes: list[str]) -> str:
+            if not lista_nomes:
+                return "Ninguém ainda"
+            if len(lista_nomes) == 1:
+                return lista_nomes[0]
+            if len(lista_nomes) == 2:
+                return f"{lista_nomes[0]} e {lista_nomes[1]}"
+            return ", ".join(lista_nomes)
 
+        # Recupera as informações processadas com suporte a empates
+        label_lider = formatar_nomes(metrics.get("leaders", []))
+        label_exato = formatar_nomes(metrics.get("exact_kings", []))
+        label_hat_trick = formatar_nomes(metrics.get("hat_tricks", []))
+        label_zebra = formatar_nomes(metrics.get("zebra_kings", []))
+
+        best_phase = metrics.get("best_phase", {"phase": None, "user": "-", "points": -1})
+        climb = metrics.get("biggest_climb", {"user": None, "delta": 0})
+
+        # LINHA SUPERIOR
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown("### 👑 Líder")
+            st.metric(
+                label=label_lider,
+                value=f"{metrics.get('max_points', 0)} pts",
+                delta=f"{metrics.get('max_exact_leader', 0)} exatos" if metrics.get('max_exact_leader', 0) > 0 else None,
+            )
+        with c2:
+            st.markdown("### 🏅 Melhor da Fase")
+            if best_phase["phase"]:
+                st.metric(
+                    label=best_phase["user"] or "-",
+                    value=f"{best_phase['points']} pts" if best_phase["points"] >= 0 else "-",
+                    delta=best_phase["phase"],
+                )
+            else:
+                st.info("Nenhuma fase finalizada para este escopo.")
+        with c3:
+            st.markdown("### 🎯 Rei do Placar Exato")
+            st.metric(
+                label=label_exato,
+                value=f"{metrics.get('max_exact', 0)} exatos" if metrics.get('max_exact', 0) > 0 else "0 exatos",
+            )
+
+        st.divider()
+
+        # LINHA INFERIOR
+        c4, c5, c6 = st.columns(3)
+        with c4:
+            st.markdown("### ⚡ Hat-Trick")
+            st.caption("Mais sequências de 3+ placares exatos consecutivos")
+            if metrics.get("max_hat_tricks', 0") if metrics.get("max_hat_tricks", 0) > 0 else 0:
+                st.metric(
+                    label=label_hat_trick,
+                    value=f"{metrics.get('max_hat_tricks')} hat-tricks",
+                    delta=f"Maior sequência: {metrics.get('max_streak', 0)}",
+                )
+            else:
+                st.info("Nenhum hat-trick registrado neste escopo.")
+        with c5:
+            st.markdown("### 📈 Maior Escalada")
+            st.caption("Maior subida no ranking (snapshots)")
+            if climb["user"] and climb["delta"] > 0:
+                st.metric(label=climb["user"], value=f"+{climb['delta']} posições")
+            else:
+                st.info("Aguardando novas rodadas para computar variações.")
+        with c6:
+            st.markdown("### 🦓 Rei das Zebras")
+            st.caption("Mais pontos em acertos de resultados surpresa")
+            if metrics.get("max_zebra_pts", 0) > 0:
+                st.metric(label=label_zebra, value=f"{metrics.get('max_zebra_pts')} pts")
+            else:
+                st.info("Nenhuma zebra registrada neste escopo ainda.")
+
+# ==============================================================================
+# --- ABA 2: RANKINGS E CLASSIFICAÇÃO COMPLETA ---
+# ==============================================================================
+with tab_rank:
+    st.markdown(
+        """
+        **Critérios de desempate:**
+        1. Mais placares exatos · 2. Mais resultados corretos · 3. Acerto do campeão · 4. Sorteio determinístico
+        """
+    )
+    
+    # Coleta a matriz de classificação injetando o escopo selecionado lá em cima
+    df_ranking = scoring.ranking_dataframe(group_id=selected_group_id)
+
+    if df_ranking.empty:
+        st.info("Tabela de classificação indisponível no momento.")
+    else:
+        # Encontra a linha do usuário logado na tabela gerada
+        my_row = df_ranking[df_ranking["Usuário"] == user["username"]]
+
+        if not my_row.empty:
+            pos = int(my_row.iloc[0]["Posição"])
+            pts = int(my_row.iloc[0]["Pontos Totais"])
+            
+            # Cards de Desempenho Pessoal no Escopo Selecionado
+            rc1, rc2, rc3 = st.columns(3)
+            rc1.metric(f"Sua posição ({'Meu Grupo' if selected_group_id else 'Geral'})", f"{pos}º")
+            rc2.metric("Seus pontos", pts)
+            rc3.metric("Seus placares exatos", int(my_row.iloc[0]["Placares Exatos"]))
+            
+            st.markdown(f"💡 Destaque: **{user['full_name']}** está em **{pos}º** lugar no filtro atual.")
+            st.write("")
+
+        # Exibição da tabela de classificação geral/grupo
+        st.dataframe(
+            df_ranking,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Posição": st.column_config.NumberColumn(format="%dº"),
+            },
+        )
+
+        # Distribuição visual em gráfico de barras
+        st.subheader("Distribuição de pontos por participante")
+        chart_data = df_ranking.set_index("Participante")["Pontos Totais"]
+        st.bar_chart(chart_data)
+
+        st.divider()
+
+        # --- RANKING POR FASE COM FILTRAGEM DINÂMICA ---
+        st.subheader("🏆 Classificação por Fase")
+        phases = db.list_phases()
+        if phases:
+            phase_names = [p["name"] for p in phases]
+            sel_phase = st.selectbox("Selecionar fase para análise:", phase_names)
+            phase_id = next(p["id"] for p in phases if p["name"] == sel_phase)
+            
+            df_phase = scoring.phase_ranking(phase_id)
+            if not df_phase.empty:
+                # Se houver um grupo selecionado, filtramos dinamicamente para manter apenas as pessoas dele
+                if selected_group_id is not None:
+                    allowed_names = set(df_ranking["Participante"])
+                    df_phase = df_phase[df_phase["Participante"].isin(allowed_names)].reset_index(drop=True)
+                
+                # Reconstrói o índice estético baseado na listagem filtrada
+                df_phase.index = df_phase.index + 1
+                df_phase.index.name = "Posição"
+                st.dataframe(df_phase, width="stretch")
+            else:
+                st.info("Sem dados computados para esta fase.")
+
+    # Regulamento de pontos no rodapé da aba de classificações
     st.divider()
-    st.subheader("Regras de pontuação")
+    st.subheader("📋 Regras de Pontuação Oficial")
     col1, col2 = st.columns(2)
     with col1:
         st.markdown(
@@ -118,3 +216,17 @@ else:
             | Artilheiro | 5 |
             """
         )
+
+# ==============================================================================
+# --- RODAPÉ PERMANENTE DO TABULEIRO (STATUS DO TORNEIO) ---
+# ==============================================================================
+st.divider()
+st.subheader("🟢 Status das Fases da Copa")
+phases_status = db.list_phases()
+status_cols = st.columns(len(phases_status) if phases_status else 1)
+
+for idx, phase in enumerate(phases_status):
+    status = phase["status"]
+    icon = {"Não iniciada": "⬜", "Aberta": "🟢", "Fechada": "🟡", "Finalizada": "✅"}.get(status, "❓")
+    with status_cols[idx % len(status_cols)]:
+        st.markdown(f"{icon} **{phase['name']}**\n`{status}`")
