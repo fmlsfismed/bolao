@@ -42,7 +42,7 @@ with tab_dash:
     if not metrics:
         st.info("Estatísticas e destaques indisponíveis para o escopo selecionado.")
     else:
-        # FUNÇÃO FORMATADORA DE EMPATES
+        # FUNÇÃO FORMATADORA DE EMPATES MÚLTIPLOS
         def formatar_nomes(lista_nomes: list[str]) -> str:
             if not lista_nomes:
                 return "Ninguém ainda"
@@ -72,7 +72,7 @@ with tab_dash:
             )
         with c2:
             st.markdown("### 🏅 Melhor da Fase")
-            if best_phase["phase"]:
+            if best_phase.get("phase"):
                 st.metric(
                     label=best_phase["user"] or "-",
                     value=f"{best_phase['points']} pts" if best_phase["points"] >= 0 else "-",
@@ -94,7 +94,7 @@ with tab_dash:
         with c4:
             st.markdown("### ⚡ Hat-Trick")
             st.caption("Mais sequências de 3+ placares exatos consecutivos")
-            if metrics.get("max_hat_tricks', 0") if metrics.get("max_hat_tricks", 0) > 0 else 0:
+            if metrics.get("max_hat_tricks", 0) > 0:
                 st.metric(
                     label=label_hat_trick,
                     value=f"{metrics.get('max_hat_tricks')} hat-tricks",
@@ -105,7 +105,7 @@ with tab_dash:
         with c5:
             st.markdown("### 📈 Maior Escalada")
             st.caption("Maior subida no ranking (snapshots)")
-            if climb["user"] and climb["delta"] > 0:
+            if climb.get("user") and climb.get("delta", 0) > 0:
                 st.metric(label=climb["user"], value=f"+{climb['delta']} posições")
             else:
                 st.info("Aguardando novas rodadas para computar variações.")
@@ -128,20 +128,19 @@ with tab_rank:
         """
     )
     
-    # Coleta a matriz de classificação injetando o escopo selecionado lá em cima
+    # Coleta a classificação injetando o grupo selecionado
     df_ranking = scoring.ranking_dataframe(group_id=selected_group_id)
 
     if df_ranking.empty:
         st.info("Tabela de classificação indisponível no momento.")
     else:
-        # Encontra a linha do usuário logado na tabela gerada
+        # Encontra o usuário logado
         my_row = df_ranking[df_ranking["Usuário"] == user["username"]]
 
         if not my_row.empty:
             pos = int(my_row.iloc[0]["Posição"])
             pts = int(my_row.iloc[0]["Pontos Totais"])
             
-            # Cards de Desempenho Pessoal no Escopo Selecionado
             rc1, rc2, rc3 = st.columns(3)
             rc1.metric(f"Sua posição ({'Meu Grupo' if selected_group_id else 'Geral'})", f"{pos}º")
             rc2.metric("Seus pontos", pts)
@@ -150,7 +149,7 @@ with tab_rank:
             st.markdown(f"💡 Destaque: **{user['full_name']}** está em **{pos}º** lugar no filtro atual.")
             st.write("")
 
-        # Exibição da tabela de classificação geral/grupo
+        # Exibição do DataFrame de Ranking
         st.dataframe(
             df_ranking,
             width="stretch",
@@ -160,7 +159,7 @@ with tab_rank:
             },
         )
 
-        # Distribuição visual em gráfico de barras
+        # Histograma/Gráfico de Barras
         st.subheader("Distribuição de pontos por participante")
         chart_data = df_ranking.set_index("Participante")["Pontos Totais"]
         st.bar_chart(chart_data)
@@ -177,19 +176,18 @@ with tab_rank:
             
             df_phase = scoring.phase_ranking(phase_id)
             if not df_phase.empty:
-                # Se houver um grupo selecionado, filtramos dinamicamente para manter apenas as pessoas dele
+                # Se houver grupo ativo, filtra o ranking da fase com base nos membros elegíveis
                 if selected_group_id is not None:
                     allowed_names = set(df_ranking["Participante"])
                     df_phase = df_phase[df_phase["Participante"].isin(allowed_names)].reset_index(drop=True)
                 
-                # Reconstrói o índice estético baseado na listagem filtrada
                 df_phase.index = df_phase.index + 1
                 df_phase.index.name = "Posição"
                 st.dataframe(df_phase, width="stretch")
             else:
                 st.info("Sem dados computados para esta fase.")
 
-    # Regulamento de pontos no rodapé da aba de classificações
+    # Regulamento de pontos
     st.divider()
     st.subheader("📋 Regras de Pontuação Oficial")
     col1, col2 = st.columns(2)
@@ -218,7 +216,7 @@ with tab_rank:
         )
 
 # ==============================================================================
-# --- RODAPÉ PERMANENTE DO TABULEIRO (STATUS DO TORNEIO) ---
+# --- RODAPÉ (STATUS DO TORNEIO) ---
 # ==============================================================================
 st.divider()
 st.subheader("🟢 Status das Fases da Copa")
