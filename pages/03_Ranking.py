@@ -15,7 +15,7 @@ if "user" not in st.session_state or st.session_state.user is None:
 
 user = st.session_state.user
 
-# --- LÓGICA DE FILTRO POR GRUPO DE USUÁRIOS (ESCOPO MESTRE) ---
+# --- LÓGICA DE FILTRO POR GRUPO DE USUÁRIOS ---
 user_profile = db.get_user_by_id(user["id"])
 user_group_id = user_profile.get("group_id") if user_profile else None
 
@@ -33,20 +33,48 @@ st.write("---")
 # Criamos duas abas principais
 tab_dash, tab_rank = st.tabs(["⭐ Destaques e Métricas", "🏆 Tabelas de Classificação"])
 
-# Puxamos o DataFrame do Ranking já filtrado pelo escopo do Grupo selecionado
-df_ranking = scoring.ranking_dataframe(group_id=selected_group_id)
+# 1. Puxamos o ranking GLOBAL do seu scoring (sem passar group_id para não quebrar)
+df_ranking = scoring.ranking_dataframe()
+
+# 2. SE o usuário selecionou o grupo privado, filtramos o DataFrame via Pandas aqui no app
+if selected_group_id is not None and not df_ranking.empty:
+    # IMPORTANTE: Mapeamos quem pertence a este grupo buscando no banco
+    # Supondo que db traga uma lista de usuários ou participantes do grupo. 
+    # Caso não tenha essa função pronta, filtramos buscando os perfis que possuem esse group_id.
+     todos_usuarios = db.get_all_users() if hasattr(db, 'get_all_users') else []
+    
+    if todos_usuarios:
+         usernames_do_grupo = [u["username"] for u in todos_usuarios if u.get("group_id") == selected_group_id]
+    else:
+        # Alternativa caso get_all_users não exista: usar uma query simulada ou fallback seguro
+        usernames_do_grupo = [user["username"]] # Garante pelo menos o usuário logado
+        
+    # Filtragem inteligente usando Pandas
+    # Verifica qual coluna identifica o usuário único no seu DataFrame ('Usuário' ou 'Participante')
+    col_user = "Usuário" if "Usuário" in df_ranking.columns else "Participante"
+    
+    if todos_usuarios:
+        df_ranking = df_ranking[df_ranking[col_user].isin(usernames_do_grupo)].copy()
+    else:
+        # Se não conseguirmos a lista do banco, filtramos dinamicamente pela regra geral do grupo (se houver a coluna no DF)
+        if "group_id" in df_ranking.columns:
+            df_ranking = df_ranking[df_ranking["group_id"] == selected_group_id].copy()
+            
+    # Recalcula a Posição sequencial para o grupo de amigos
+    if not df_ranking.empty:
+        df_ranking = df_ranking.sort_values(by=["Pontos Totais", "Placares Exatos"], ascending=[False, False])
+        df_ranking["Posição"] = range(1, len(df_ranking) + 1)
 
 # ==============================================================================
 # --- ABA 1: DASHBOARD (MÉTRICAS + EMPATES DINÂMICOS) ---
 # ==============================================================================
 with tab_dash:
-    # Chamamos a função sem o group_id para evitar o TypeError anterior
+    # Chamamos a métrica global sem argumentos conflitantes
     metrics_global = scoring.dashboard_metrics()
 
     if df_ranking.empty or not metrics_global:
         st.info("Estatísticas e destaques indisponíveis para o escopo selecionado.")
     else:
-        # FUNÇÃO FORMATADORA DE EMPATES MÚLTIPLOS
         def formatar_nomes(lista_nomes: list[str]) -> str:
             if not lista_nomes:
                 return "Ninguém ainda"
@@ -56,28 +84,26 @@ with tab_dash:
                 return f"{lista_nomes[0]} e {lista_nomes[1]}"
             return ", ".join(lista_nomes)
 
-        # Se o usuário escolheu o grupo privado, filtramos os destaques para mostrar apenas quem está no grupo
+        col_nome_exibicao = "Participante" if "Participante" in df_ranking.columns else "Usuário"
+
         if selected_group_id is not None:
-            usuarios_permitidos = set(df_ranking["Participante"])
+            # Recalcula destaques de Líder e Rei do Exato LOCALMENTE usando o Pandas filtrado
+            max_pts_grupo = df_ranking["Pontos Totais"].max()
+            leaders = df_ranking[df_ranking["Pontos Totais"] == max_pts_grupo][col_nome_exibicao].tolist()
             
-            # Recalcula os líderes com base no ranking atual do grupo
-            max_pts_grupo = df_ranking["Pontos Totais"].max() if not df_ranking.empty else 0
-            leaders = df_ranking[df_ranking["Pontos Totais"] == max_pts_grupo]["Participante"].tolist()
+            max_exat_grupo = df_ranking["Placares Exatos"].max() if "Placares Exatos" in df_ranking.columns else 0
+            exact_kings = df_ranking[df_ranking["Placares Exatos"] == max_exat_grupo][col_nome_exibicao].tolist() if max_exat_grupo > 0 else []
             
-            # Recalcula o rei do exato com base no grupo
-            max_exat_grupo = df_ranking["Placares Exatos"].max() if not df_ranking.empty else 0
-            exact_kings = df_ranking[df_ranking["Placares Exatos"] == max_exat_grupo]["Participante"].tolist()
-            
-            # Para os demais cards, filtramos os globais se pertencerem ao grupo
-            hat_tricks = [n for n in metrics_global.get("hat_tricks", []) if n in usuarios_permitidos]
-            zebra_kings = [n for n in metrics_global.get("zebra_kings", []) if n in usuarios_permitidos]
+            # Filtra os demais destaques da lista global se eles estiverem no seu grupo
+            usuarios_do_grupo_nomes = set(df_ranking[col_nome_exibicao])
+            hat_tricks = [n for n in metrics_global.get("hat_tricks", []) if n in usuarios_do_grupo_nomes]
+            zebra_kings = [n for n in metrics_global.get("zebra_kings", []) if n in usuarios_do_grupo_nomes]
             
             max_points = max_pts_grupo
             max_exact = max_exat_grupo
             max_hat_tricks = metrics_global.get("max_hat_tricks", 0) if hat_tricks else 0
             max_zebra_pts = metrics_global.get("max_zebra_pts", 0) if zebra_kings else 0
         else:
-            # Se for Visão Geral, usa o retorno padrão do seu arquivo de empates
             leaders = metrics_global.get("leaders", [])
             exact_kings = metrics_global.get("exact_kings", [])
             hat_tricks = metrics_global.get("hat_tricks", [])
@@ -164,19 +190,20 @@ with tab_rank:
     )
     
     if df_ranking.empty:
-        st.info("Tabela de classificação indisponível no momento.")
+        st.info("Tabela de classificação vazia ou indisponível para este escopo.")
     else:
-        # Encontra o usuário logado
-        my_row = df_ranking[df_ranking["Usuário"] == user["username"]]
+        # Localiza o usuário
+        my_row = df_ranking[df_ranking["Usuário"] == user["username"]] if "Usuário" in df_ranking.columns else df_ranking[df_ranking["Participante"] == user["full_name"]]
 
         if not my_row.empty:
             pos = int(my_row.iloc[0]["Posição"])
             pts = int(my_row.iloc[0]["Pontos Totais"])
+            exat = int(my_row.iloc[0]["Placares Exatos"]) if "Placares Exatos" in my_row.columns else 0
             
             rc1, rc2, rc3 = st.columns(3)
             rc1.metric(f"Sua posição ({'Meu Grupo' if selected_group_id else 'Geral'})", f"{pos}º")
             rc2.metric("Seus pontos", pts)
-            rc3.metric("Seus placares exatos", int(my_row.iloc[0]["Placares Exatos"]))
+            rc3.metric("Seus placares exatos", exat)
             
             st.markdown(f"💡 Destaque: **{user['full_name']}** está em **{pos}º** lugar no filtro atual.")
             st.write("")
@@ -193,12 +220,13 @@ with tab_rank:
 
         # Histograma/Gráfico de Barras
         st.subheader("Distribuição de pontos por participante")
-        chart_data = df_ranking.set_index("Participante")["Pontos Totais"]
+        col_grafico = "Participante" if "Participante" in df_ranking.columns else "Usuário"
+        chart_data = df_ranking.set_index(col_grafico)["Pontos Totais"]
         st.bar_chart(chart_data)
 
         st.divider()
 
-        # --- RANKING POR FASE COM FILTRAGEM DINÂMICA ---
+        # --- RANKING POR FASE COM FILTRAGEM DINÂMICA VIA PANDAS ---
         st.subheader("🏆 Classificação por Fase")
         phases = db.list_phases()
         if phases:
@@ -208,10 +236,10 @@ with tab_rank:
             
             df_phase = scoring.phase_ranking(phase_id)
             if not df_phase.empty:
-                # Filtra o ranking da fase com base no grupo ativo
+                # Se houver grupo ativo, usamos a interseção do Pandas para limpar quem não é do grupo
                 if selected_group_id is not None:
-                    allowed_names = set(df_ranking["Participante"])
-                    df_phase = df_phase[df_phase["Participante"].isin(allowed_names)].reset_index(drop=True)
+                    allowed_names = set(df_ranking[col_grafico])
+                    df_phase = df_phase[df_phase[col_grafico].isin(allowed_names)].reset_index(drop=True)
                 
                 df_phase.index = df_phase.index + 1
                 df_phase.index.name = "Posição"
