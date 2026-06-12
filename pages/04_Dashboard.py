@@ -1,5 +1,6 @@
-"""Dashboard page — Bolão Copa FIFA 2k26."""
+"""Dashboard page — Bolão Copa FIFA 2k26 (Grupos + Empates)."""
 
+import pandas as pd
 import streamlit as st
 import database as db
 import scoring
@@ -14,7 +15,7 @@ if "user" not in st.session_state or st.session_state.user is None:
 
 user = st.session_state.user
 
-# --- LÓGICA DE FILTRO POR GRUPO ---
+# --- LÓGICA DE FILTRO POR GRUPO DE USUÁRIOS ---
 user_profile = db.get_user_by_id(user["id"])
 user_group_id = user_profile.get("group_id") if user_profile else None
 
@@ -29,28 +30,44 @@ selected_group_id = user_group_id if "👥" in selected_dash else None
 
 st.write("---")
 
+# Coleta as métricas passando o escopo do grupo (ou None para o Geral)
 metrics = scoring.dashboard_metrics(group_id=selected_group_id)
 
 if not metrics:
-    st.info("Dashboard disponível após cadastro de participantes e palpites.")
+    st.info("Dashboard disponível após cadastro de participantes e palpites no escopo selecionado.")
     st.stop()
 
-leader = metrics["leader"]
-best_phase = metrics["best_phase"]
-exact_king = metrics["exact_king"]
-hat_trick = metrics["hat_trick"]
-climb = metrics["biggest_climb"]
-zebra = metrics["zebra_king"]
 
-# Top row
+# --- FUNÇÃO FORMATADORA DE EMPATES ---
+def formatar_nomes(lista_nomes: list[str]) -> str:
+    if not lista_nomes:
+        return "Ninguém ainda"
+    if len(lista_nomes) == 1:
+        return lista_nomes[0]
+    if len(lista_nomes) == 2:
+        return f"{lista_nomes[0]} e {lista_nomes[1]}"
+    # Se tiver 3 ou mais, lista por vírgula para não esconder ninguém
+    return ", ".join(lista_nomes)
+
+
+# Recupera as informações processadas com suporte a empates
+label_lider = formatar_nomes(metrics.get("leaders", []))
+label_exato = formatar_nomes(metrics.get("exact_kings", []))
+label_hat_trick = formatar_nomes(metrics.get("hat_tricks", []))
+label_zebra = formatar_nomes(metrics.get("zebra_kings", []))
+
+best_phase = metrics.get("best_phase", {"phase": None, "user": "-", "points": -1})
+climb = metrics.get("biggest_climb", {"user": None, "delta": 0})
+
+# --- LINHA SUPERIOR ---
 c1, c2, c3 = st.columns(3)
 
 with c1:
     st.markdown("### 👑 Líder")
     st.metric(
-        label=leader.full_name,
-        value=f"{leader.total_points} pts",
-        delta=f"{leader.exact_scores} placares exatos",
+        label=label_lider,
+        value=f"{metrics.get('max_points', 0)} pts",
+        delta=f"{metrics.get('max_exact_leader', 0)} placares exatos" if metrics.get('max_exact_leader', 0) > 0 else None,
     )
 
 with c2:
@@ -62,32 +79,31 @@ with c2:
             delta=best_phase["phase"],
         )
     else:
-        st.info("Sem dados por fase.")
+        st.info("Nenhuma fase finalizada para este escopo.")
 
 with c3:
     st.markdown("### 🎯 Rei do Placar Exato")
     st.metric(
-        label=exact_king.full_name,
-        value=f"{exact_king.exact_scores} exatos",
-        delta=f"{exact_king.total_points} pts totais",
+        label=label_exato,
+        value=f"{metrics.get('max_exact', 0)} exatos" if metrics.get('max_exact', 0) > 0 else "0 exatos",
     )
 
 st.divider()
 
-# Bottom row
+# --- LINHA INFERIOR ---
 c4, c5, c6 = st.columns(3)
 
 with c4:
     st.markdown("### ⚡ Hat-Trick")
     st.caption("Mais sequências de 3+ placares exatos consecutivos")
-    if hat_trick:
+    if metrics.get("max_hat_tricks", 0) > 0:
         st.metric(
-            label=hat_trick["full_name"],
-            value=f"{hat_trick['hat_tricks']} hat-tricks",
-            delta=f"Maior sequência: {hat_trick['max_streak']}",
+            label=label_hat_trick,
+            value=f"{metrics.get('max_hat_tricks')} hat-tricks",
+            delta=f"Maior sequência: {metrics.get('max_streak', 0)}",
         )
     else:
-        st.info("Nenhum hat-trick registrado para o escopo selecionado.")
+        st.info("Nenhum hat-trick registrado neste escopo.")
 
 with c5:
     st.markdown("### 📈 Maior Escalada")
@@ -98,38 +114,41 @@ with c5:
             value=f"+{climb['delta']} posições",
         )
     else:
-        st.info("Sem snapshots suficientes registrados para este escopo.")
+        st.info("Aguardando novas rodadas para computar variações.")
 
 with c6:
     st.markdown("### 🦓 Rei das Zebras")
     st.caption("Mais pontos em acertos de resultados surpresa")
-    if zebra:
+    if metrics.get("max_zebra_pts', 0") if metrics.get("max_zebra_pts", 0) > 0 else 0:
         st.metric(
-            label=zebra["full_name"],
-            value=f"{zebra['zebra_points']} pts",
-            delta=f"{zebra['zebra_count']} zebras",
+            label=label_zebra,
+            value=f"{metrics.get('max_zebra_pts')} pts",
         )
     else:
         st.info("Nenhuma zebra registrada neste escopo ainda.")
 
 st.divider()
 
-st.subheader("Visão geral do ranking")
+# --- RANKING ADAPTÁVEL AO ESCOPO ---
+st.subheader(f"Visão geral do ranking — {selected_dash}")
 df = scoring.ranking_dataframe(group_id=selected_group_id)
+
 if not df.empty:
     top5 = df.head(5)
-    st.dataframe(top5, use_container_width=True, hide_index=True)
+    st.dataframe(top5, width="stretch", hide_index=True)
 
     st.subheader("Distribuição de pontos")
     chart_data = df.set_index("Participante")["Pontos Totais"]
     st.bar_chart(chart_data)
+else:
+    st.info("Nenhum participante pontuou neste escopo ainda.")
 
 st.divider()
+
+# --- STATUS DAS FASES (GERAL DO TORNEIO) ---
 st.subheader("Status das fases")
 phases = db.list_phases()
 for phase in phases:
     status = phase["status"]
-    icon = {"Não iniciada": "⬜", "Aberta": "🟢", "Fechada": "🟡", "Finalizada": "✅"}.get(
-        status, "❓"
-    )
+    icon = {"Não iniciada": "⬜", "Aberta": "🟢", "Fechada": "🟡", "Finalizada": "✅"}.get(status, "❓")
     st.markdown(f"{icon} **{phase['name']}** — {status}")
