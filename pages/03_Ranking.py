@@ -30,16 +30,20 @@ selected_group_id = user_group_id if "👥" in selected_escopo else None
 
 st.write("---")
 
-# Criamos duas abas principais para organizar o layout de forma limpa e profissional
+# Criamos duas abas principais
 tab_dash, tab_rank = st.tabs(["⭐ Destaques e Métricas", "🏆 Tabelas de Classificação"])
 
+# Puxamos o DataFrame do Ranking já filtrado pelo escopo do Grupo selecionado
+df_ranking = scoring.ranking_dataframe(group_id=selected_group_id)
+
 # ==============================================================================
-# --- ABA 1: DASHBOARD (MÉTRICAS + EMPATES) ---
+# --- ABA 1: DASHBOARD (MÉTRICAS + EMPATES DINÂMICOS) ---
 # ==============================================================================
 with tab_dash:
-    metrics = scoring.dashboard_metrics(group_id=selected_group_id)
+    # Chamamos a função sem o group_id para evitar o TypeError anterior
+    metrics_global = scoring.dashboard_metrics()
 
-    if not metrics:
+    if df_ranking.empty or not metrics_global:
         st.info("Estatísticas e destaques indisponíveis para o escopo selecionado.")
     else:
         # FUNÇÃO FORMATADORA DE EMPATES MÚLTIPLOS
@@ -52,14 +56,45 @@ with tab_dash:
                 return f"{lista_nomes[0]} e {lista_nomes[1]}"
             return ", ".join(lista_nomes)
 
-        # Recupera as informações processadas com suporte a empates
-        label_lider = formatar_nomes(metrics.get("leaders", []))
-        label_exato = formatar_nomes(metrics.get("exact_kings", []))
-        label_hat_trick = formatar_nomes(metrics.get("hat_tricks", []))
-        label_zebra = formatar_nomes(metrics.get("zebra_kings", []))
+        # Se o usuário escolheu o grupo privado, filtramos os destaques para mostrar apenas quem está no grupo
+        if selected_group_id is not None:
+            usuarios_permitidos = set(df_ranking["Participante"])
+            
+            # Recalcula os líderes com base no ranking atual do grupo
+            max_pts_grupo = df_ranking["Pontos Totais"].max() if not df_ranking.empty else 0
+            leaders = df_ranking[df_ranking["Pontos Totais"] == max_pts_grupo]["Participante"].tolist()
+            
+            # Recalcula o rei do exato com base no grupo
+            max_exat_grupo = df_ranking["Placares Exatos"].max() if not df_ranking.empty else 0
+            exact_kings = df_ranking[df_ranking["Placares Exatos"] == max_exat_grupo]["Participante"].tolist()
+            
+            # Para os demais cards, filtramos os globais se pertencerem ao grupo
+            hat_tricks = [n for n in metrics_global.get("hat_tricks", []) if n in usuarios_permitidos]
+            zebra_kings = [n for n in metrics_global.get("zebra_kings", []) if n in usuarios_permitidos]
+            
+            max_points = max_pts_grupo
+            max_exact = max_exat_grupo
+            max_hat_tricks = metrics_global.get("max_hat_tricks", 0) if hat_tricks else 0
+            max_zebra_pts = metrics_global.get("max_zebra_pts", 0) if zebra_kings else 0
+        else:
+            # Se for Visão Geral, usa o retorno padrão do seu arquivo de empates
+            leaders = metrics_global.get("leaders", [])
+            exact_kings = metrics_global.get("exact_kings", [])
+            hat_tricks = metrics_global.get("hat_tricks", [])
+            zebra_kings = metrics_global.get("zebra_kings", [])
+            
+            max_points = metrics_global.get("max_points", 0)
+            max_exact = metrics_global.get("max_exact", 0)
+            max_hat_tricks = metrics_global.get("max_hat_tricks", 0)
+            max_zebra_pts = metrics_global.get("max_zebra_pts", 0)
 
-        best_phase = metrics.get("best_phase", {"phase": None, "user": "-", "points": -1})
-        climb = metrics.get("biggest_climb", {"user": None, "delta": 0})
+        label_lider = formatar_nomes(leaders)
+        label_exato = formatar_nomes(exact_kings)
+        label_hat_trick = formatar_nomes(hat_tricks)
+        label_zebra = formatar_nomes(zebra_kings)
+
+        best_phase = metrics_global.get("best_phase", {"phase": None, "user": "-", "points": -1})
+        climb = metrics_global.get("biggest_climb", {"user": None, "delta": 0})
 
         # LINHA SUPERIOR
         c1, c2, c3 = st.columns(3)
@@ -67,8 +102,8 @@ with tab_dash:
             st.markdown("### 👑 Líder")
             st.metric(
                 label=label_lider,
-                value=f"{metrics.get('max_points', 0)} pts",
-                delta=f"{metrics.get('max_exact_leader', 0)} exatos" if metrics.get('max_exact_leader', 0) > 0 else None,
+                value=f"{max_points} pts",
+                delta=f"{metrics_global.get('max_exact_leader', 0)} exatos" if selected_group_id is None and metrics_global.get('max_exact_leader', 0) > 0 else None,
             )
         with c2:
             st.markdown("### 🏅 Melhor da Fase")
@@ -84,7 +119,7 @@ with tab_dash:
             st.markdown("### 🎯 Rei do Placar Exato")
             st.metric(
                 label=label_exato,
-                value=f"{metrics.get('max_exact', 0)} exatos" if metrics.get('max_exact', 0) > 0 else "0 exatos",
+                value=f"{max_exact} exatos" if max_exact > 0 else "0 exatos",
             )
 
         st.divider()
@@ -94,11 +129,11 @@ with tab_dash:
         with c4:
             st.markdown("### ⚡ Hat-Trick")
             st.caption("Mais sequências de 3+ placares exatos consecutivos")
-            if metrics.get("max_hat_tricks", 0) > 0:
+            if max_hat_tricks > 0:
                 st.metric(
                     label=label_hat_trick,
-                    value=f"{metrics.get('max_hat_tricks')} hat-tricks",
-                    delta=f"Maior sequência: {metrics.get('max_streak', 0)}",
+                    value=f"{max_hat_tricks} hat-tricks",
+                    delta=f"Maior sequência: {metrics_global.get('max_streak', 0)}",
                 )
             else:
                 st.info("Nenhum hat-trick registrado neste escopo.")
@@ -112,8 +147,8 @@ with tab_dash:
         with c6:
             st.markdown("### 🦓 Rei das Zebras")
             st.caption("Mais pontos em acertos de resultados surpresa")
-            if metrics.get("max_zebra_pts", 0) > 0:
-                st.metric(label=label_zebra, value=f"{metrics.get('max_zebra_pts')} pts")
+            if max_zebra_pts > 0:
+                st.metric(label=label_zebra, value=f"{max_zebra_pts} pts")
             else:
                 st.info("Nenhuma zebra registrada neste escopo ainda.")
 
@@ -128,9 +163,6 @@ with tab_rank:
         """
     )
     
-    # Coleta a classificação injetando o grupo selecionado
-    df_ranking = scoring.ranking_dataframe(group_id=selected_group_id)
-
     if df_ranking.empty:
         st.info("Tabela de classificação indisponível no momento.")
     else:
@@ -176,7 +208,7 @@ with tab_rank:
             
             df_phase = scoring.phase_ranking(phase_id)
             if not df_phase.empty:
-                # Se houver grupo ativo, filtra o ranking da fase com base nos membros elegíveis
+                # Filtra o ranking da fase com base no grupo ativo
                 if selected_group_id is not None:
                     allowed_names = set(df_ranking["Participante"])
                     df_phase = df_phase[df_phase["Participante"].isin(allowed_names)].reset_index(drop=True)
