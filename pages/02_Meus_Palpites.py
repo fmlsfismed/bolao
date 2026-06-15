@@ -374,7 +374,7 @@ with tab_all:
         )
         phase_id = next(p["id"] for p in closed_phases if p["name"] == view_phase)
         all_preds = db.get_all_predictions(phase_id)
-        #----
+
         if all_preds:
             rows = []
             for p in all_preds:
@@ -402,7 +402,7 @@ with tab_all:
                         "Pontos": pts,
                     }
                 )
-        #------
+
             # FIX DA LINHA 412: Trocado 'phase_rows' por 'rows' para carregar a tabela correta
             st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
         else:
